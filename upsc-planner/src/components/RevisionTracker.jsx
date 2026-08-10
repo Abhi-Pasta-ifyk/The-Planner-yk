@@ -1,15 +1,18 @@
 import React, { useState, useEffect } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { db } from '../db'; // <-- Import local Dexie DB
 import { Check, Plus, Trash2, Calendar, AlertCircle } from 'lucide-react';
-import API from '../api';
-import { useAccent } from '../AccentContext'; // <-- Import accent hook
+import { useAccent } from '../AccentContext'; 
 
 const RevisionTracker = () => {
-  const { themeClasses } = useAccent(); // <-- Destructure global theme
+  const { themeClasses } = useAccent(); 
 
-  // --- STATE MANAGEMENT ---
-  const [masterSubjects, setMasterSubjects] = useState([]);
-  const [revisions, setRevisions] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // --- REACTIVE LOCAL STATE ---
+  const masterSubjects = useLiveQuery(() => db.subjects.toArray());
+  const rawRevisions = useLiveQuery(() => db.planner.toArray());
+  
+  const loading = masterSubjects === undefined || rawRevisions === undefined;
+
   const [activeFilter, setActiveFilter] = useState('All');
   const [errorMessage, setErrorMessage] = useState('');
 
@@ -19,44 +22,23 @@ const RevisionTracker = () => {
   const [newSubtext, setNewSubtext] = useState('');
   const [newStudyDate, setNewStudyDate] = useState('');
 
-  // Fetch subjects AND planner items from MongoDB on mount
+  // Setup Default Dropdown Selection
   useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true);
-      try {
-        // Fetch both collections in parallel for speed
-        const [subjectsRes, plannerRes] = await Promise.all([
-          API.get('/subjects'),
-          API.get('/planner')
-        ]);
+    if (masterSubjects && masterSubjects.length > 0 && !newSubjectName) {
+      setNewSubjectName(masterSubjects[0].name);
+    }
+  }, [masterSubjects, newSubjectName]);
 
-        setMasterSubjects(subjectsRes.data);
-        
-        // Set the default dropdown value to the first subject if it exists
-        if (subjectsRes.data.length > 0) {
-          setNewSubjectName(subjectsRes.data[0].name);
-        }
+  // Format Revisions 
+  const revisions = (rawRevisions || []).map(item => ({
+    ...item,
+    subjectName: item.subject || 'General'
+  }));
 
-        const formatted = plannerRes.data.map(item => ({
-          ...item,
-          id: item._id,
-          subjectName: item.subject || 'General'
-        }));
-        setRevisions(formatted);
-      } catch (err) {
-        console.error("Failed to fetch data:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-  }, []);
-
-  const filterOptions = ['All', ...masterSubjects.map(s => s.name)];
+  const filterOptions = ['All', ...(masterSubjects || []).map(s => s.name)];
 
   const getSubjectBadgeStyle = (subjectName) => {
-    const sub = masterSubjects.find(s => s.name === subjectName);
+    const sub = (masterSubjects || []).find(s => s.name === subjectName);
     return sub ? `bg-gray-100 dark:bg-slate-800 ${sub.textColor || 'text-gray-700 dark:text-gray-300'}` : 'bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-gray-400';
   };
 
@@ -79,27 +61,11 @@ const RevisionTracker = () => {
       done: !targetRow[revKey].done 
     };
 
-    setRevisions(revisions.map(row => 
-      row.id === rowId ? { ...row, [revKey]: updatedRevField } : row
-    ));
-
-    try {
-      await API.put(`/planner/${rowId}`, { [revKey]: updatedRevField });
-    } catch (err) {
-      console.error("Failed to update revision status:", err);
-    }
+    await db.planner.update(rowId, { [revKey]: updatedRevField });
   };
 
   const handleConfidenceChange = async (rowId, newLevel) => {
-    setRevisions(revisions.map(row =>
-      row.id === rowId ? { ...row, confidenceLevel: newLevel } : row
-    ));
-
-    try {
-      await API.put(`/planner/${rowId}`, { confidenceLevel: newLevel });
-    } catch (err) {
-      console.error("Failed to update confidence:", err);
-    }
+    await db.planner.update(rowId, { confidenceLevel: newLevel });
   };
 
   const handleRevisionDateEdit = async (rowId, revKey, newDate) => {
@@ -111,33 +77,15 @@ const RevisionTracker = () => {
       date: newDate 
     };
 
-    setRevisions(revisions.map(row =>
-      row.id === rowId ? { ...row, [revKey]: updatedRevField } : row
-    ));
-
-    try {
-      await API.put(`/planner/${rowId}`, { [revKey]: updatedRevField });
-    } catch (err) {
-      console.error("Failed to update revision date:", err);
-    }
+    await db.planner.update(rowId, { [revKey]: updatedRevField });
   };
 
   const deleteRevision = async (rowId) => {
-    setRevisions(revisions.filter(row => row.id !== rowId));
-    try {
-      await API.delete(`/planner/${rowId}`);
-    } catch (err) {
-      console.error("Failed to delete planner item:", err);
-    }
+    await db.planner.delete(rowId);
   };
 
   const handleInlineEdit = async (rowId, field, value) => {
-    setRevisions(revisions.map(row => row.id === rowId ? { ...row, [field]: value } : row));
-    try {
-      await API.put(`/planner/${rowId}`, { [field]: value });
-    } catch (err) {
-      console.error("Failed inline update:", err);
-    }
+    await db.planner.update(rowId, { [field]: value });
   };
 
   const handleAddTopic = async (e) => {
@@ -163,22 +111,11 @@ const RevisionTracker = () => {
       rev3: { date: formatDate(r3), done: false }
     };
 
-    try {
-      const response = await API.post('/planner', payload);
-      const savedItem = {
-        ...response.data,
-        id: response.data._id,
-        subjectName: response.data.subject
-      };
-
-      setRevisions([...revisions, savedItem]);
-      setNewTopic('');
-      setNewSubtext('');
-      setNewStudyDate('');
-    } catch (err) {
-      console.error("Failed to create planner entry:", err);
-      setErrorMessage(err.response?.data?.error || "Failed to save topic to database.");
-    }
+    await db.planner.add(payload);
+    
+    setNewTopic('');
+    setNewSubtext('');
+    setNewStudyDate('');
   };
 
   const topicsTracked = revisions.length;
@@ -193,7 +130,7 @@ const RevisionTracker = () => {
 
   const filteredRevisions = activeFilter === 'All' ? revisions : revisions.filter(row => row.subjectName === activeFilter);
 
-  if (loading) return <div className="p-12 text-center text-gray-500 dark:text-gray-400 font-medium">Loading Revision Tracker from database...</div>;
+  if (loading) return <div className="p-12 text-center text-gray-500 dark:text-gray-400 font-medium">Loading Revision Tracker from local device...</div>;
 
   return (
     <div className="w-full pt-12 pb-16">
@@ -338,7 +275,7 @@ const RevisionTracker = () => {
           </tbody>
         </table>
 
-        {masterSubjects.length > 0 ? (
+        {masterSubjects && masterSubjects.length > 0 ? (
           <form onSubmit={handleAddTopic} className="flex items-center gap-4 bg-gray-50/80 dark:bg-slate-800/50 p-5 border-t border-gray-100 dark:border-slate-800 transition-colors">
              <div className={`p-2 rounded-lg transition-colors ${themeClasses.bgLight} ${themeClasses.text}`}><Plus size={18} /></div>
              
@@ -347,7 +284,7 @@ const RevisionTracker = () => {
                onChange={(e) => setNewSubjectName(e.target.value)}
                className={`text-sm font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 rounded-lg px-3 py-2 outline-none focus:border-transparent focus:ring-2 transition-colors ${themeClasses.ring}`}
              >
-               {masterSubjects.map(opt => <option key={opt.id || opt._id || opt.name} value={opt.name}>{opt.name}</option>)}
+               {masterSubjects.map(opt => <option key={opt.id || opt.name} value={opt.name}>{opt.name}</option>)}
              </select>
 
              <div className="flex-1 flex flex-col gap-1">

@@ -1,55 +1,55 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  BookOpen, Clock, Target, Activity 
-} from 'lucide-react';
-import API from '../api'; 
-import { useAccent } from '../AccentContext'; // <-- Import accent hook
+import { useLiveQuery } from 'dexie-react-hooks';
+import { db } from '../db'; // <-- Import local Dexie DB
+import { BookOpen, Clock, Target, Activity } from 'lucide-react';
+import { useAccent } from '../AccentContext'; 
 
 const Cover = () => {
-  const { themeClasses } = useAccent(); // <-- Destructure global theme classes
+  const { themeClasses } = useAccent(); 
 
   const [daysRemaining, setDaysRemaining] = useState(0);
-  const [stats, setStats] = useState({ totalChapters: 0, doneChapters: 0, totalHours: 0, percent: 0 });
-  const [isLoading, setIsLoading] = useState(true);
+
+  // --- REACTIVE LOCAL DATABASE QUERIES ---
+  const rawSubjects = useLiveQuery(() => db.subjects.toArray());
+  const rawMonthlyRecords = useLiveQuery(() => db.monthlyRecords.toArray());
+  
+  const isLoading = rawSubjects === undefined || rawMonthlyRecords === undefined;
 
   useEffect(() => {
-    // 1. Calculate Countdown
-    const targetDate = new Date('2027-05-30T00:00:00');
+    // 1. Calculate Countdown using the dynamic date from Settings
+    const storedDate = localStorage.getItem('targetDate') || '2027-05-28';
+    const targetDate = new Date(storedDate);
     const today = new Date();
     const diffTime = targetDate - today;
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
     setDaysRemaining(diffDays > 0 ? diffDays : 0);
-
-    // 2. Fetch Global Database Stats
-    const fetchGlobalStats = async () => {
-      try {
-        const response = await API.get('/subjects');
-        const subjects = response.data;
-        
-        let tChapters = 0;
-        let dChapters = 0;
-        let tHours = 0;
-
-        subjects.forEach(sub => {
-          tHours += sub.hours || 0;
-          sub.books?.forEach(book => {
-            tChapters += book.chapters?.length || 0;
-            dChapters += book.chapters?.filter(c => c.status === 'Done').length || 0;
-          });
-        });
-
-        const percent = tChapters === 0 ? 0 : Math.round((dChapters / tChapters) * 100);
-        
-        setStats({ totalChapters: tChapters, doneChapters: dChapters, totalHours: tHours, percent });
-      } catch (err) {
-        console.error("Failed to fetch global stats:", err);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    fetchGlobalStats();
   }, []);
+
+  // --- CALCULATIONS ---
+  let tChapters = 0;
+  let dChapters = 0;
+  let tHours = 0;
+
+  if (!isLoading) {
+    // Calculate Syllabus Progress
+    rawSubjects.forEach(sub => {
+      sub.books?.forEach(book => {
+        tChapters += book.chapters?.length || 0;
+        dChapters += book.chapters?.filter(c => c.status === 'Done').length || 0;
+      });
+    });
+
+    // Calculate Deep Work Hours from actual studied days
+    let totalStudiedDays = 0;
+    rawMonthlyRecords.forEach(record => {
+      if (record.studiedDays) {
+        totalStudiedDays += record.studiedDays.length;
+      }
+    });
+    tHours = totalStudiedDays * 8; // Assuming 8 hours per productive day
+  }
+
+  const percent = tChapters === 0 ? 0 : Math.round((dChapters / tChapters) * 100);
 
   return (
     <main className="flex-1 bg-transparent h-full pb-16 transition-colors duration-300">
@@ -73,7 +73,7 @@ const Cover = () => {
           </div>
           
           <div className="col-span-1 bg-[#1e232d] dark:bg-slate-800/80 p-8 rounded-2xl shadow-sm border border-transparent dark:border-slate-700 flex flex-col justify-center items-center text-center transition-colors">
-            <h3 className="text-xs font-bold text-gray-400 tracking-wider uppercase mb-2 transition-colors">Countdown to Prelims '27</h3>
+            <h3 className="text-xs font-bold text-gray-400 tracking-wider uppercase mb-2 transition-colors">Countdown to Prelims</h3>
             <span className="text-5xl font-extrabold text-white mb-1 transition-colors">{daysRemaining}</span>
             <span className="text-sm text-gray-400 transition-colors">Days Remaining</span>
           </div>
@@ -94,8 +94,8 @@ const Cover = () => {
             <div>
               <p className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-1 transition-colors">Chapters Mastered</p>
               <div className="flex items-end gap-2">
-                <span className="text-3xl font-extrabold text-slate-800 dark:text-slate-100 transition-colors">{isLoading ? '-' : stats.doneChapters}</span>
-                <span className="text-sm font-bold text-gray-400 dark:text-gray-500 mb-1 transition-colors">/ {isLoading ? '-' : stats.totalChapters}</span>
+                <span className="text-3xl font-extrabold text-slate-800 dark:text-slate-100 transition-colors">{isLoading ? '-' : dChapters}</span>
+                <span className="text-sm font-bold text-gray-400 dark:text-gray-500 mb-1 transition-colors">/ {isLoading ? '-' : tChapters}</span>
               </div>
             </div>
           </div>
@@ -108,7 +108,7 @@ const Cover = () => {
             <div>
               <p className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-1 transition-colors">Deep Work Logged</p>
               <div className="flex items-end gap-1">
-                <span className="text-3xl font-extrabold text-slate-800 dark:text-slate-100 transition-colors">{isLoading ? '-' : stats.totalHours}</span>
+                <span className="text-3xl font-extrabold text-slate-800 dark:text-slate-100 transition-colors">{isLoading ? '-' : tHours}</span>
                 <span className="text-sm font-bold text-gray-400 dark:text-gray-500 mb-1 transition-colors">hrs</span>
               </div>
             </div>
@@ -122,12 +122,12 @@ const Cover = () => {
             <div className="w-full">
               <div className="flex justify-between items-end mb-1">
                  <p className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest transition-colors">Syllabus Progress</p>
-                 <span className="text-lg font-extrabold text-slate-800 dark:text-slate-100 transition-colors">{isLoading ? '-' : stats.percent}%</span>
+                 <span className="text-lg font-extrabold text-slate-800 dark:text-slate-100 transition-colors">{isLoading ? '-' : percent}%</span>
               </div>
               <div className="w-full bg-gray-100 dark:bg-slate-800 rounded-full h-2 mt-2 transition-colors">
                 <div 
                   className={`h-2 rounded-full transition-all duration-1000 ease-out ${themeClasses.primary}`} 
-                  style={{ width: `${isLoading ? 0 : stats.percent}%` }}
+                  style={{ width: `${isLoading ? 0 : percent}%` }}
                 ></div>
               </div>
             </div>

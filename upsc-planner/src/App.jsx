@@ -15,16 +15,29 @@ import DailyDashboard from './components/DailyDashboard';
 import CheerUp from './components/CheerUp';
 import Auth from './components/Auth'; 
 import Settings from './components/Settings'; 
-import API from './api'; 
 
 export default function App() {
+  // --- SPLASH SCREEN STATE ---
+  const [showSplash, setShowSplash] = useState(true);
+
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState(null); 
   const [isCheckingAuth, setIsCheckingAuth] = useState(true); 
 
-  const [activeView, setActiveView] = useState('Daily Feed');
+  const [activeView, setActiveView] = useState(localStorage.getItem('landingPage') || 'Daily Feed');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
+  // --- SPLASH SCREEN TIMER ---
+  useEffect(() => {
+    // Fades out the splash screen after 3.5 seconds
+    const splashTimer = setTimeout(() => {
+      setShowSplash(false);
+    }, 3500);
+
+    return () => clearTimeout(splashTimer);
+  }, []);
+
+  // --- THEME SYNC ---
   useEffect(() => {
     const theme = localStorage.getItem('theme') || 'system';
     const root = window.document.documentElement;
@@ -38,39 +51,29 @@ export default function App() {
     }
   }, []);
 
+  // --- LOCAL AUTHENTICATION CHECK ---
   useEffect(() => {
-    const verifySession = async () => {
-      try {
-        const response = await API.get('/auth/me'); 
-        setUser(response.data);
+    const verifyLocalSession = () => {
+      const masterLock = localStorage.getItem('upsc_app_lock');
+      const isSessionActive = sessionStorage.getItem('upsc_session_active');
+
+      if (!masterLock || isSessionActive) {
+        setUser({ name: localStorage.getItem('upsc_user_name') || 'Abhi' });
         setIsAuthenticated(true);
-      } catch (err) {
+      } else {
         setIsAuthenticated(false);
-      } finally {
-        setIsCheckingAuth(false);
       }
+      setIsCheckingAuth(false);
     };
 
-    verifySession();
+    verifyLocalSession();
   }, []);
 
-  const handleAuthSuccess = (userData) => {
-    setUser(userData);
+  const handleAuthSuccess = () => {
+    sessionStorage.setItem('upsc_session_active', 'true');
+    setUser({ name: localStorage.getItem('upsc_user_name') || 'Abhi' });
     setIsAuthenticated(true);
   };
-
-  if (isCheckingAuth) {
-    return (
-      <AccentProvider>
-        <div className="flex h-screen w-full items-center justify-center bg-[#eae6df] dark:bg-slate-950 transition-colors duration-300">
-          <div className="flex flex-col items-center gap-4 text-indigo-600 dark:text-indigo-400">
-            <Loader size={40} className="animate-spin" />
-            <p className="text-sm font-bold tracking-widest uppercase text-slate-500 dark:text-slate-400">Verifying Secure Session...</p>
-          </div>
-        </div>
-      </AccentProvider>
-    );
-  }
 
   const renderContent = () => {
     switch (activeView) {
@@ -91,44 +94,67 @@ export default function App() {
 
   return (
     <AccentProvider>
-      {/* AccentProvider is now at the root so Auth and App both have access */}
-      {!isAuthenticated ? (
-        <Auth onAuthSuccess={handleAuthSuccess} />
-      ) : (
-        <div className="flex h-screen bg-[#eae6df] dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans overflow-hidden transition-colors duration-300">
-          
-          <div 
-            className={`transition-all duration-300 ease-in-out shrink-0 bg-[#1e232d] z-40 overflow-hidden shadow-2xl ${
-              isSidebarOpen ? 'w-64' : 'w-0'
-            }`}
-          >
-            <div className="w-64 h-full relative">
-              <Sidebar activeView={activeView} setActiveView={setActiveView} />
-            </div>
-          </div>
-
-          <div className="flex-1 h-screen overflow-y-auto relative scroll-smooth">
-            
-            <div className="sticky top-0 z-50 p-6 bg-gradient-to-b from-[#eae6df] dark:from-slate-950 to-transparent pointer-events-none transition-colors duration-300">
-              <button 
-                onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-                className="pointer-events-auto p-2.5 bg-white/50 dark:bg-slate-800/50 backdrop-blur-md rounded-xl shadow-sm text-gray-700 dark:text-gray-200 hover:bg-white dark:hover:bg-slate-800 hover:shadow transition-all border border-gray-200/50 dark:border-slate-700/50"
-                title="Toggle Menu"
-              >
-                {isSidebarOpen ? <X size={20} /> : <Menu size={20} />}
-              </button>
-            </div>
-
-            <div className="w-full max-w-[1600px] mx-auto px-8 md:px-12 lg:px-24 pb-24 -mt-10">
-              {renderContent()}
-            </div>
-            
-          </div>
-          
-          <CheerUp />
-          
+      <div className="relative w-full h-screen bg-[#eae6df] dark:bg-slate-950 overflow-hidden text-slate-800 dark:text-slate-100 font-sans transition-colors duration-300">
+        
+        {/* ==========================================
+            1. THE SPLASH SCREEN OVERLAY
+            ========================================== */}
+        <div 
+          className={`absolute inset-0 z-50 flex items-center justify-center bg-[#eae6df] dark:bg-slate-950 transition-opacity duration-1000 ease-in-out ${
+            showSplash ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          }`}
+        >
+          {/* mix-blend-multiply magically removes the video's gray background! */}
+          <video 
+            src="/work fool.webm" 
+            autoPlay 
+            muted 
+            playsInline 
+            className="w-full max-w-md object-contain mix-blend-multiply dark:mix-blend-screen scale-110"
+          />
         </div>
-      )}
+
+        {/* ==========================================
+            2. THE SLIDE-IN APP / LOGIN SCREEN
+            ========================================== */}
+        <div 
+          className={`w-full h-full transition-all duration-1000 ease-out transform ${
+            showSplash ? 'translate-y-12 opacity-0 scale-95' : 'translate-y-0 opacity-100 scale-100'
+          }`}
+        >
+          {isCheckingAuth ? null : !isAuthenticated ? (
+            <Auth onAuthSuccess={handleAuthSuccess} />
+          ) : (
+            <div className="flex h-full w-full">
+              {/* Sidebar */}
+              <div className={`transition-all duration-300 ease-in-out shrink-0 bg-[#1e232d] z-40 overflow-hidden shadow-2xl ${isSidebarOpen ? 'w-64' : 'w-0'}`}>
+                <div className="w-64 h-full relative">
+                  <Sidebar activeView={activeView} setActiveView={setActiveView} />
+                </div>
+              </div>
+
+              {/* Main Content Area */}
+              <div className="flex-1 h-screen overflow-y-auto relative scroll-smooth">
+                <div className="sticky top-0 z-50 p-6 bg-gradient-to-b from-[#eae6df] dark:from-slate-950 to-transparent pointer-events-none transition-colors duration-300">
+                  <button 
+                    onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                    className="pointer-events-auto p-2.5 bg-white/50 dark:bg-slate-800/50 backdrop-blur-md rounded-xl shadow-sm text-gray-700 dark:text-gray-200 hover:bg-white dark:hover:bg-slate-800 hover:shadow transition-all border border-gray-200/50 dark:border-slate-700/50"
+                  >
+                    {isSidebarOpen ? <X size={20} /> : <Menu size={20} />}
+                  </button>
+                </div>
+
+                <div className="w-full max-w-[1600px] mx-auto px-8 md:px-12 lg:px-24 pb-24 -mt-10">
+                  {renderContent()}
+                </div>
+              </div>
+              
+              <CheerUp />
+            </div>
+          )}
+        </div>
+
+      </div>
     </AccentProvider>
   );
 }

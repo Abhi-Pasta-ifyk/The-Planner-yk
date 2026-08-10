@@ -1,56 +1,36 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { db } from '../db'; // <-- Import local Dexie DB
 import { Flame, Target, Zap, Activity, Calendar, ArrowRight, CheckCircle2 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
-import API from '../api'; 
-import { useAccent } from '../AccentContext'; // <-- Import accent hook
+import { useAccent } from '../AccentContext'; 
 
 const Dashboard = ({ user }) => { 
-  const { themeClasses, accent } = useAccent(); // <-- Destructure global theme
+  const { themeClasses, accent } = useAccent(); 
 
-  // Map accent to hex color for the glowing blurred circle
   const accentHex = { 
-    indigo: '#6366f1', 
-    emerald: '#10b981', 
-    rose: '#f43f5e', 
-    amber: '#f59e0b', 
-    cyan: '#06b6d4' 
+    indigo: '#6366f1', emerald: '#10b981', rose: '#f43f5e', amber: '#f59e0b', cyan: '#06b6d4' 
   }[accent] || '#6366f1';
 
-  // --- STATE ---
-  const [subjects, setSubjects] = useState([]);
-  const [monthlyRecords, setMonthlyRecords] = useState([]);
-  const [plannerItems, setPlannerItems] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // --- REACTIVE LOCAL DATABASE QUERIES ---
+  const rawSubjects = useLiveQuery(() => db.subjects.toArray());
+  const rawMonthlyRecords = useLiveQuery(() => db.monthlyRecords.toArray());
+  const rawPlannerItems = useLiveQuery(() => db.planner.toArray());
+  
+  const loading = rawSubjects === undefined || rawMonthlyRecords === undefined || rawPlannerItems === undefined;
 
-  const targetExamDate = new Date('2027-05-28'); 
+  const subjects = rawSubjects || [];
+  const monthlyRecords = rawMonthlyRecords || [];
+  const plannerItems = rawPlannerItems || [];
 
-  useEffect(() => {
-    const fetchDashboardData = async () => {
-      try {
-        const [subjectsRes, monthlyRes, plannerRes] = await Promise.all([
-          API.get('/subjects'),
-          API.get('/monthly-records'),
-          API.get('/planner')
-        ]);
-        
-        setSubjects(subjectsRes.data);
-        setMonthlyRecords(monthlyRes.data);
-        setPlannerItems(plannerRes.data);
-      } catch (err) {
-        console.error("Failed to fetch dashboard data:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchDashboardData();
-  }, []);
+  const targetExamDate = new Date(localStorage.getItem('targetDate') || '2027-05-28'); 
 
   // --- DATA PROCESSING ---
   const studiedSet = new Set();
   monthlyRecords.forEach(record => {
     if (record.studiedDays) {
       record.studiedDays.forEach(day => {
-        studiedSet.add(`${record.monthKey}-${String(day).padStart(2, '0')}`);
+        studiedSet.add(`${record.dateKey || record.monthKey}-${String(day).padStart(2, '0')}`);
       });
     }
   });
@@ -59,7 +39,10 @@ const Dashboard = ({ user }) => {
   let tempDate = new Date();
   while (true) {
     const dStr = `${tempDate.getFullYear()}-${String(tempDate.getMonth() + 1).padStart(2, '0')}-${String(tempDate.getDate()).padStart(2, '0')}`;
-    if (studiedSet.has(dStr)) {
+    // Support both format mappings depending on how they were saved in the monthly tracker
+    const alternateStr = `${tempDate.getFullYear()}-${String(tempDate.getMonth() + 1).padStart(2, '0')}-${String(tempDate.getDate()).padStart(2, '0')}`;
+    
+    if (studiedSet.has(dStr) || studiedSet.has(alternateStr)) {
       currentStreak++;
       tempDate.setDate(tempDate.getDate() - 1);
     } else {
@@ -89,7 +72,12 @@ const Dashboard = ({ user }) => {
       if (item[rev] && !item[rev].done && item[rev].date) {
         const revDate = new Date(item[rev].date);
         if (revDate <= today) {
-          allDueActions.push({ ...item, dueRev: rev, dateObj: revDate });
+          allDueActions.push({ 
+            ...item, 
+            dueRev: rev, 
+            dateObj: revDate,
+            subject: item.subject || 'General' 
+          });
         }
       }
     });
@@ -150,6 +138,8 @@ const Dashboard = ({ user }) => {
 
   if (loading) return <div className="p-12 text-center text-gray-500 dark:text-gray-400 font-medium">Booting Command Center...</div>;
 
+  const displayName = localStorage.getItem('upsc_user_name') || user?.name?.split(' ')[0] || 'Scholar';
+
   return (
     <div className="w-full pt-12 pb-16">
       
@@ -158,7 +148,7 @@ const Dashboard = ({ user }) => {
         <div>
           <h2 className="text-xs font-bold text-gray-400 dark:text-gray-500 tracking-widest mb-1 uppercase">Overview</h2>
           <h1 className="text-3xl font-extrabold text-gray-800 dark:text-slate-100 tracking-tight transition-colors">
-            Welcome back, {user?.name || 'Scholar'}.
+            Welcome back, {displayName}.
           </h1>
         </div>
       </header>

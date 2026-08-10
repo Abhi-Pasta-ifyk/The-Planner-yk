@@ -1,14 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { db } from '../db'; // <-- Import local Dexie DB
 import { ChevronRight, BookOpen, FileText, CheckCircle2, Circle, Plus, Sparkles, Trash2, X, Loader, Image as ImageIcon, BookText } from 'lucide-react';
-import API from '../api'; 
 import { useAccent } from '../AccentContext'; 
+import { localAiService } from '../localAiService';
 
 const SubjectTracker = () => {
   const { themeClasses } = useAccent(); 
 
-  // --- STATE ---
-  const [subjects, setSubjects] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // --- REACTIVE LOCAL STATE ---
+  const subjects = useLiveQuery(() => db.subjects.toArray());
+  const loading = subjects === undefined;
 
   const [activeSubjectId, setActiveSubjectId] = useState(null);
   const [activeBookId, setActiveBookId] = useState(null);
@@ -34,28 +36,6 @@ const SubjectTracker = () => {
     { bg: 'bg-amber-500', text: 'text-amber-500' }
   ];
 
-  useEffect(() => {
-    const fetchSubjects = async () => {
-      try {
-        const response = await API.get('/subjects');
-        setSubjects(response.data);
-      } catch (err) {
-        console.error("Failed to fetch subjects:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchSubjects();
-  }, []);
-
-  const syncSubjectToDB = async (updatedSubject) => {
-    try {
-      await API.put(`/subjects/${updatedSubject._id}`, updatedSubject);
-    } catch (err) {
-      console.error("Failed to sync subject updates to database:", err);
-    }
-  };
-
   // --- CALCULATIONS ---
   const getBookStats = (book) => {
     const total = book.chapters?.length || 0;
@@ -79,7 +59,7 @@ const SubjectTracker = () => {
     let total = 0;
     let done = 0;
     let hours = 0;
-    subjects.forEach(sub => {
+    (subjects || []).forEach(sub => {
       hours += sub.hours || 0;
       const stats = getSubjectStats(sub);
       total += stats.totalChapters;
@@ -95,34 +75,23 @@ const SubjectTracker = () => {
     
     const randomColor = colorPalette[Math.floor(Math.random() * colorPalette.length)];
     
-    const subjectToAdd = {
+    await db.subjects.add({
       name: newSubject.name,
       priority: newSubject.priority,
       color: randomColor.bg,
       textColor: randomColor.text,
       hours: 0,
       books: []
-    };
+    });
 
-    try {
-      const response = await API.post('/subjects', subjectToAdd);
-      setSubjects([...subjects, response.data]);
-      setIsSubjectModalOpen(false);
-      setNewSubject({ name: '', priority: 'Medium' });
-    } catch (err) {
-      console.error("Failed to add subject:", err);
-    }
+    setIsSubjectModalOpen(false);
+    setNewSubject({ name: '', priority: 'Medium' });
   };
 
   const handleDeleteSubject = async (id) => {
     if (window.confirm("Are you sure you want to delete this entire subject and all its books?")) {
-      try {
-        await API.delete(`/subjects/${id}`);
-        setSubjects(subjects.filter(s => s._id !== id));
-        setActiveSubjectId(null);
-      } catch (err) {
-        console.error("Failed to delete subject:", err);
-      }
+      await db.subjects.delete(id);
+      setActiveSubjectId(null);
     }
   };
 
@@ -132,17 +101,18 @@ const SubjectTracker = () => {
     setIsGeneratingBook(true);
     
     try {
-      const response = await API.post('/books/generate', { bookName: bookQuery });
-      setBookPreview(response.data); 
+      // Call Gemini directly from the browser!
+      const response = await localAiService.generateSmartSyllabus(bookQuery);
+      setBookPreview(response); 
     } catch (err) {
-      console.error("Failed to generate book:", err);
-      alert("The AI couldn't generate the syllabus. Make sure your backend route is set up!");
+      console.error(err);
+      alert("AI Generation failed. Ensure you pasted a valid Gemini API key in the Settings tab.");
     } finally {
       setIsGeneratingBook(false);
     }
   };
 
-  const handleConfirmSmartBook = (subId) => {
+  const handleConfirmSmartBook = async (subId) => {
     if (!bookPreview) return;
 
     const newBook = {
@@ -159,36 +129,27 @@ const SubjectTracker = () => {
       }))
     };
     
-    const updatedSubjects = subjects.map(sub => {
-      if (sub._id === subId) {
-        const updatedSub = { ...sub, books: [...(sub.books || []), newBook] };
-        syncSubjectToDB(updatedSub); 
-        return updatedSub;
-      }
-      return sub;
-    });
+    const subject = subjects.find(s => s.id === subId);
+    if (subject) {
+      await db.subjects.update(subId, { books: [...(subject.books || []), newBook] });
+    }
 
-    setSubjects(updatedSubjects);
     setBookPreview(null);
     setBookQuery('');
   };
 
-  const handleDeleteBook = (subId, bookId) => {
+  const handleDeleteBook = async (subId, bookId) => {
     if (window.confirm("Delete this book?")) {
-      const updatedSubjects = subjects.map(sub => {
-        if (sub._id === subId) {
-          const updatedSub = { ...sub, books: sub.books.filter(b => b.id !== bookId) };
-          syncSubjectToDB(updatedSub); 
-          return updatedSub;
-        }
-        return sub;
-      });
-      setSubjects(updatedSubjects);
+      const subject = subjects.find(s => s.id === subId);
+      if (subject) {
+        const updatedBooks = subject.books.filter(b => b.id !== bookId);
+        await db.subjects.update(subId, { books: updatedBooks });
+      }
     }
   };
 
   // --- MAGIC GITHUB AUTOMATION ---
-  const handleMagicGithub = (subId) => {
+  const handleMagicGithub = async (subId) => {
     const numChaps = parseInt(window.prompt("How many chapters are in this book?"));
     if (!numChaps || isNaN(numChaps)) return;
 
@@ -200,93 +161,75 @@ const SubjectTracker = () => {
       author: 'Official NCERT (via GitHub)',
       pages: 'Full Book',
       coverUrl: '', 
-      chapters: Array.from({ length: numChaps }, (_, i) => {
-        return {
-          id: Date.now() + i,
-          name: `Chapter ${i + 1}`,
-          diff: 'Medium',
-          status: 'Pending'
-        };
-      })
+      chapters: Array.from({ length: numChaps }, (_, i) => ({
+        id: Date.now() + i,
+        name: `Chapter ${i + 1}`,
+        diff: 'Medium',
+        status: 'Pending'
+      }))
     };
 
-    const updatedSubjects = subjects.map(sub => {
-      if (sub._id === subId) {
-        const updatedSub = { ...sub, books: [...(sub.books || []), newBook] };
-        syncSubjectToDB(updatedSub); 
-        return updatedSub;
-      }
-      return sub;
-    });
-
-    setSubjects(updatedSubjects);
+    const subject = subjects.find(s => s.id === subId);
+    if (subject) {
+      await db.subjects.update(subId, { books: [...(subject.books || []), newBook] });
+    }
   };
 
   // --- ACTIONS (CHAPTERS) ---
-  const toggleChapterStatus = (subId, bookId, chapId) => {
-    const updatedSubjects = subjects.map(sub => {
-      if (sub._id !== subId) return sub;
-      const updatedSub = {
-        ...sub,
-        books: sub.books.map(book => {
-          if (book.id !== bookId) return book;
-          return {
-            ...book,
-            chapters: book.chapters.map(chap => 
-              chap.id === chapId ? { ...chap, status: chap.status === 'Done' ? 'Pending' : 'Done' } : chap
-            )
-          };
-        })
+  const toggleChapterStatus = async (subId, bookId, chapId) => {
+    const subject = subjects.find(s => s.id === subId);
+    if (!subject) return;
+
+    const updatedBooks = subject.books.map(book => {
+      if (book.id !== bookId) return book;
+      return {
+        ...book,
+        chapters: book.chapters.map(chap => 
+          chap.id === chapId ? { ...chap, status: chap.status === 'Done' ? 'Pending' : 'Done' } : chap
+        )
       };
-      syncSubjectToDB(updatedSub); 
-      return updatedSub;
     });
-    setSubjects(updatedSubjects);
+
+    await db.subjects.update(subId, { books: updatedBooks });
   };
 
-  const handleAddChapter = (e, subId, bookId) => {
+  const handleAddChapter = async (e, subId, bookId) => {
     e.preventDefault();
     if (!newChapterName.trim()) return;
     
-    const updatedSubjects = subjects.map(sub => {
-      if (sub._id !== subId) return sub;
-      const updatedSub = {
-        ...sub,
-        books: sub.books.map(book => {
-          if (book.id !== bookId) return book;
-          return { ...book, chapters: [...(book.chapters || []), { id: Date.now(), name: newChapterName, diff: 'Medium', status: 'Pending' }] };
-        })
+    const subject = subjects.find(s => s.id === subId);
+    if (!subject) return;
+
+    const updatedBooks = subject.books.map(book => {
+      if (book.id !== bookId) return book;
+      return { 
+        ...book, 
+        chapters: [...(book.chapters || []), { id: Date.now(), name: newChapterName, diff: 'Medium', status: 'Pending' }] 
       };
-      syncSubjectToDB(updatedSub); 
-      return updatedSub;
     });
 
-    setSubjects(updatedSubjects);
+    await db.subjects.update(subId, { books: updatedBooks });
     setNewChapterName('');
   };
 
-  const deleteChapter = (subId, bookId, chapId) => {
-    const updatedSubjects = subjects.map(sub => {
-      if (sub._id !== subId) return sub;
-      const updatedSub = {
-        ...sub,
-        books: sub.books.map(book => {
-          if (book.id !== bookId) return book;
-          return { ...book, chapters: book.chapters.filter(c => c.id !== chapId) };
-        })
-      };
-      syncSubjectToDB(updatedSub); 
-      return updatedSub;
+  const deleteChapter = async (subId, bookId, chapId) => {
+    const subject = subjects.find(s => s.id === subId);
+    if (!subject) return;
+
+    const updatedBooks = subject.books.map(book => {
+      if (book.id !== bookId) return book;
+      return { ...book, chapters: book.chapters.filter(c => c.id !== chapId) };
     });
-    setSubjects(updatedSubjects);
+
+    await db.subjects.update(subId, { books: updatedBooks });
   };
 
   // --- RENDER VARS ---
-  const activeSubject = subjects.find(s => s._id === activeSubjectId);
+  const activeSubject = subjects?.find(s => s.id === activeSubjectId);
   const activeBook = activeSubject?.books?.find(b => b.id === activeBookId);
   const overallStats = getOverallStats();
 
-  if (loading) return <div className="p-12 text-center text-slate-500 dark:text-slate-400 font-medium">Loading Syllabus from database...</div>;
+  if (loading) return <div className="p-12 text-center text-slate-500 dark:text-slate-400 font-medium">Loading Syllabus from local device...</div>;
 
   return (
     <div className="w-full pt-12 pb-16">
@@ -345,8 +288,8 @@ const SubjectTracker = () => {
               const stats = getSubjectStats(sub);
               return (
                 <div 
-                  key={sub._id} 
-                  onClick={() => setActiveSubjectId(sub._id)}
+                  key={sub.id} 
+                  onClick={() => setActiveSubjectId(sub.id)}
                   className={`bg-white dark:bg-slate-900 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-800 flex flex-col justify-between cursor-pointer hover:shadow-md transition-all transform hover:-translate-y-1 hover:${themeClasses.border}`}
                 >
                   <div className="flex justify-between items-center mb-6">
@@ -390,7 +333,7 @@ const SubjectTracker = () => {
             <div>
                <h3 className="text-2xl font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-3 transition-colors">
                  {activeSubject.name} Dashboard
-                 <button onClick={() => handleDeleteSubject(activeSubject._id)} className="text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md hover:bg-red-50 dark:hover:bg-red-900/30">
+                 <button onClick={() => handleDeleteSubject(activeSubject.id)} className="text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md hover:bg-red-50 dark:hover:bg-red-900/30">
                    <Trash2 size={18} />
                  </button>
                </h3>
@@ -474,7 +417,7 @@ const SubjectTracker = () => {
                           >
                             Open
                           </button>
-                          <button onClick={() => handleDeleteBook(activeSubject._id, book.id)} className="p-1.5 text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover/row:opacity-100 transition-opacity rounded-md">
+                          <button onClick={() => handleDeleteBook(activeSubject.id, book.id)} className="p-1.5 text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover/row:opacity-100 transition-opacity rounded-md">
                             <Trash2 size={16} />
                           </button>
                         </td>
@@ -522,7 +465,7 @@ const SubjectTracker = () => {
         </div>
       )}
 
-      {/* ================= LEVEL 3: CHAPTER TRACKER (NO PDF) ================= */}
+      {/* ================= LEVEL 3: CHAPTER TRACKER ================= */}
       {activeBookId && (
         <div className="animate-in fade-in slide-in-from-right-4 duration-300">
           
@@ -567,7 +510,7 @@ const SubjectTracker = () => {
 
                         <td className="py-4 px-6 text-center">
                           <button 
-                            onClick={() => toggleChapterStatus(activeSubject._id, activeBook.id, chap.id)}
+                            onClick={() => toggleChapterStatus(activeSubject.id, activeBook.id, chap.id)}
                             className={`inline-flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-md transition-colors w-full justify-center ${
                               chap.status === 'Done' ? 'text-green-700 dark:text-green-400 bg-green-100 dark:bg-green-900/30 hover:bg-green-200 dark:hover:bg-green-800/50' : 'text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700'
                             }`}
@@ -576,7 +519,7 @@ const SubjectTracker = () => {
                           </button>
                         </td>
                         <td className="py-4 px-6 text-right">
-                           <button onClick={() => deleteChapter(activeSubject._id, activeBook.id, chap.id)} className="text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"><Trash2 size={16}/></button>
+                           <button onClick={() => deleteChapter(activeSubject.id, activeBook.id, chap.id)} className="text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"><Trash2 size={16}/></button>
                         </td>
                       </tr>
                     );
@@ -588,7 +531,7 @@ const SubjectTracker = () => {
             </table>
           </div>
 
-          <form onSubmit={(e) => handleAddChapter(e, activeSubject._id, activeBook.id)} className="flex items-center gap-3 bg-white dark:bg-slate-900 p-4 rounded-xl shadow-sm border border-gray-100 dark:border-slate-800 transition-colors">
+          <form onSubmit={(e) => handleAddChapter(e, activeSubject.id, activeBook.id)} className="flex items-center gap-3 bg-white dark:bg-slate-900 p-4 rounded-xl shadow-sm border border-gray-100 dark:border-slate-800 transition-colors">
              <div className={`p-2 rounded-lg transition-colors ${themeClasses.bgLight} ${themeClasses.text}`}><Plus size={18} /></div>
              <input type="text" value={newChapterName} onChange={e => setNewChapterName(e.target.value)} className="flex-1 text-sm outline-none bg-transparent text-slate-800 dark:text-slate-100 placeholder:text-gray-300 dark:placeholder:text-gray-600 transition-colors" placeholder="Add a new chapter manually..."/>
              <button type="submit" disabled={!newChapterName.trim()} className={`px-4 py-1.5 text-xs font-bold rounded-lg shadow-sm disabled:opacity-50 transition-colors ${themeClasses.primary}`}>Add Chapter</button>

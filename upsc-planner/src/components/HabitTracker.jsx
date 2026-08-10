@@ -1,97 +1,63 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { db } from '../db';
 import { Plus, Trash2, Edit2 } from 'lucide-react';
-import API from '../api'; 
-import { useAccent } from '../AccentContext'; // <-- Import accent hook
+import { useAccent } from '../AccentContext'; 
 
 const HabitTracker = ({ monthKey, daysInMonth, monthName }) => {
-  const { themeClasses } = useAccent(); // <-- Destructure global theme
+  const { themeClasses } = useAccent(); 
 
-  // --- STATE MANAGEMENT ---
-  const [habits, setHabits] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // --- REACTIVE LOCAL STATE ---
+  // Fetch all habits and filter by the current monthKey. 
+  // (Filtering in JS prevents needing to upgrade the Dexie database schema version)
+  const rawHabits = useLiveQuery(() => db.habits.toArray());
+  const loading = rawHabits === undefined;
+  const habits = (rawHabits || []).filter(h => h.monthKey === monthKey);
+
   const [newHabitName, setNewHabitName] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [editingText, setEditingText] = useState('');
-
-  // Fetch habits whenever monthKey changes
-  useEffect(() => {
-    const fetchHabits = async () => {
-      setLoading(true);
-      try {
-        const response = await API.get(`/habits/${monthKey}`);
-        setHabits(response.data);
-      } catch (err) {
-        console.error("Failed to fetch habits:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchHabits();
-  }, [monthKey]);
 
   // --- ACTIONS ---
   const handleAddHabit = async (e) => {
     e.preventDefault();
     if (!newHabitName.trim()) return;
 
-    try {
-      const response = await API.post('/habits', {
-        monthKey,
-        name: newHabitName,
-        completedDays: []
-      });
-      setHabits([...habits, response.data]);
-      setNewHabitName('');
-    } catch (err) {
-      console.error("Failed to add habit:", err);
-    }
+    await db.habits.add({
+      monthKey,
+      name: newHabitName,
+      completedDays: []
+    });
+    
+    setNewHabitName('');
   };
 
   const toggleDay = async (habitId, day) => {
-    const targetHabit = habits.find(h => h._id === habitId);
+    const targetHabit = habits.find(h => h.id === habitId);
     if (!targetHabit) return;
 
-    const updatedDays = targetHabit.completedDays.includes(day)
-      ? targetHabit.completedDays.filter(d => d !== day)
-      : [...targetHabit.completedDays, day];
+    const completedDays = targetHabit.completedDays || [];
+    const updatedDays = completedDays.includes(day)
+      ? completedDays.filter(d => d !== day)
+      : [...completedDays, day];
 
-    // Optimistic UI Update
-    setHabits(prev => prev.map(h => h._id === habitId ? { ...h, completedDays: updatedDays } : h));
-
-    try {
-      await API.put(`/habits/${habitId}`, { completedDays: updatedDays });
-    } catch (err) {
-      console.error("Failed to sync habit days:", err);
-    }
+    await db.habits.update(habitId, { completedDays: updatedDays });
   };
 
   const deleteHabit = async (habitId) => {
-    // Optimistic UI Update
-    setHabits(prev => prev.filter(h => h._id !== habitId));
-    try {
-      await API.delete(`/habits/${habitId}`);
-    } catch (err) {
-      console.error("Failed to delete habit:", err);
-    }
+    await db.habits.delete(habitId);
   };
 
   const startEditing = (habit) => {
-    setEditingId(habit._id);
+    setEditingId(habit.id);
     setEditingText(habit.name);
   };
 
   const saveEdit = async (habitId) => {
     if (!editingText.trim()) return;
     
-    // Optimistic UI Update
-    setHabits(prev => prev.map(h => h._id === habitId ? { ...h, name: editingText } : h));
+    await db.habits.update(habitId, { name: editingText });
     setEditingId(null);
-
-    try {
-      await API.put(`/habits/${habitId}`, { name: editingText });
-    } catch (err) {
-      console.error("Failed to update habit name:", err);
-    }
   };
 
   // Generate array [1, 2, ..., daysInMonth]
@@ -113,7 +79,7 @@ const HabitTracker = ({ monthKey, daysInMonth, monthName }) => {
             className={`text-xs bg-transparent text-slate-800 dark:text-slate-200 border border-gray-200 dark:border-slate-700 rounded-md px-3 py-1.5 outline-none w-48 placeholder:text-gray-400 dark:placeholder:text-gray-500 transition-colors focus:ring-2 focus:border-transparent ${themeClasses.ring}`}
             placeholder="Add new habit..."
           />
-          <button type="submit" disabled={!newHabitName.trim()} className={`p-1.5 rounded-md disabled:opacity-50 transition-colors ${themeClasses.primary}`}>
+          <button type="submit" disabled={!newHabitName.trim()} className={`p-1.5 rounded-md disabled:opacity-50 transition-colors ${themeClasses.primary} text-white`}>
             <Plus size={14} />
           </button>
         </form>
@@ -131,18 +97,18 @@ const HabitTracker = ({ monthKey, daysInMonth, monthName }) => {
           </thead>
           <tbody>
             {habits.length > 0 ? habits.map((habit) => (
-              <tr key={habit._id} className="group hover:bg-gray-50/50 dark:hover:bg-slate-800/50 transition-colors border-b border-gray-50 dark:border-slate-800/50 last:border-0">
+              <tr key={habit.id} className="group hover:bg-gray-50/50 dark:hover:bg-slate-800/50 transition-colors border-b border-gray-50 dark:border-slate-800/50 last:border-0">
                 
                 {/* Habit Name Column with Edit/Delete */}
                 <td className="py-3 px-4 flex items-center justify-between w-56 pr-6">
-                  {editingId === habit._id ? (
+                  {editingId === habit.id ? (
                     <input 
                       autoFocus
                       type="text" 
                       value={editingText}
                       onChange={(e) => setEditingText(e.target.value)}
-                      onBlur={() => saveEdit(habit._id)}
-                      onKeyDown={(e) => e.key === 'Enter' && saveEdit(habit._id)}
+                      onBlur={() => saveEdit(habit.id)}
+                      onKeyDown={(e) => e.key === 'Enter' && saveEdit(habit.id)}
                       className={`text-xs font-bold text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-800 border border-gray-300 dark:border-slate-600 rounded px-2 py-1 outline-none w-full mr-2 transition-colors focus:ring-2 focus:border-transparent ${themeClasses.ring}`}
                     />
                   ) : (
@@ -156,19 +122,19 @@ const HabitTracker = ({ monthKey, daysInMonth, monthName }) => {
                   )}
                   
                   {/* Action Icons (Show on hover) */}
-                  <div className={`flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${editingId === habit._id ? 'hidden' : ''}`}>
+                  <div className={`flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${editingId === habit.id ? 'hidden' : ''}`}>
                     <button onClick={() => startEditing(habit)} className="text-gray-300 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-400 p-0.5 transition-colors"><Edit2 size={12} /></button>
-                    <button onClick={() => deleteHabit(habit._id)} className="text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 p-0.5 transition-colors"><Trash2 size={12} /></button>
+                    <button onClick={() => deleteHabit(habit.id)} className="text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 p-0.5 transition-colors"><Trash2 size={12} /></button>
                   </div>
                 </td>
 
                 {/* Day Checkboxes */}
                 {daysArray.map(day => {
-                  const isDone = habit.completedDays.includes(day);
+                  const isDone = (habit.completedDays || []).includes(day);
                   return (
                     <td key={day} className="py-3 px-1 text-center">
                       <button 
-                        onClick={() => toggleDay(habit._id, day)}
+                        onClick={() => toggleDay(habit.id, day)}
                         className={`w-4 h-4 rounded-[4px] transition-all mx-auto block border ${
                           isDone 
                             ? 'bg-green-600 dark:bg-green-500 border-green-600 dark:border-green-500 shadow-sm' 
