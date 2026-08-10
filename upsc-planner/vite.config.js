@@ -1,12 +1,19 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite' // <-- Brings your CSS back to life!
+import tailwindcss from '@tailwindcss/vite'
+import electron from 'vite-plugin-electron/simple'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  base: './', // <-- CRITICAL: Tells Vite to use relative paths for local files
   plugins: [
     react(),
-    tailwindcss(), // <-- Required for all your styling to work
+    tailwindcss(),
+    electron({
+      main: {
+        entry: 'electron/main.js',
+      },
+    }),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Menu, X, Loader } from 'lucide-react'; 
 import { AccentProvider } from './AccentContext';
 import Sidebar from './components/Sidebar';
@@ -19,6 +19,7 @@ import Settings from './components/Settings';
 export default function App() {
   // --- SPLASH SCREEN STATE ---
   const [showSplash, setShowSplash] = useState(true);
+  const videoRef = useRef(null); // Added useRef for the video
 
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState(null); 
@@ -27,15 +28,22 @@ export default function App() {
   const [activeView, setActiveView] = useState(localStorage.getItem('landingPage') || 'Daily Feed');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
-  // --- SPLASH SCREEN TIMER ---
+  // --- SPLASH SCREEN TIMER & VIDEO AUTOPLAY ---
   useEffect(() => {
+    // Force play video on mount (fixes Electron video loading delays)
+    if (showSplash && videoRef.current) {
+      videoRef.current.play().catch((err) => {
+        console.error("Autoplay failed:", err);
+      });
+    }
+
     // Fades out the splash screen after 3.5 seconds
     const splashTimer = setTimeout(() => {
       setShowSplash(false);
     }, 3500);
 
     return () => clearTimeout(splashTimer);
-  }, []);
+  }, [showSplash]);
 
   // --- THEME SYNC ---
   useEffect(() => {
@@ -106,7 +114,8 @@ export default function App() {
         >
           {/* mix-blend-multiply magically removes the video's gray background! */}
           <video 
-            src="/work fool.webm" 
+            ref={videoRef}
+            src="./work-fool.webm" 
             autoPlay 
             muted 
             playsInline 
